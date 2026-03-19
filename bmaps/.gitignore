@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.env
+.env/
+venv/
+ENV/
+.env
+*.env
+
+# Jupyter Notebooks
+*.ipynb
+.ipynb_checkpoints/
+
+# VS Code
+.vscode/
+
+# Gradle
+*.log
+*.lock
+*.class
+*.jar
+*.war
+*.ear
+*.iml
+.gradle/
+build/
+
+# Android Studio
+.idea/
+*.iml
+*.apk
+*.ap_*
+*.dex
+*.so
+*.DS_Store
+local.properties
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# Misc
+*.swp
+*.swo
+
+# Project-specific
+project_summary (1).md
+WORK_DONE.md
+
+# Test outputs
+test/__pycache__/
+
+# Ignore generated folders
+vision-companion/**/build/
+VISIONCompanion2/build/

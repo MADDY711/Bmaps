@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+websockets
+opencv-python
+pyaudio
+google-genai
+google-generativeai
+httpx
+python-dotenv
+numpy
+pillow
