@@ -91,8 +91,13 @@ interface VisionCompanionApi {
 
 object ApiClient {
 
-    // ⚠️ PUT YOUR PC's IPv4 ADDRESS HERE
-    private const val BASE_URL = "http://192.168.1.100:8000/" //apna pc ka ip daalna hai ....phone cam ka nahi
+    private const val USE_CLOUD = false // 👈 Toggle this for Cloud (Render) vs Local
+
+    private const val LOCAL_IP = "192.168.1.3" // 👈 Put your PC's IP here
+    private const val CLOUD_HOST = "walking-assistant-backend.onrender.com"
+
+    val BASE_URL = if (USE_CLOUD) "https://$CLOUD_HOST/" else "http://$LOCAL_IP:8000/"
+    val WS_URL   = if (USE_CLOUD) "wss://$CLOUD_HOST/ws/stream" else "ws://$LOCAL_IP:8000/ws/stream"
 
     private val client = OkHttpClient.Builder()
         .addInterceptor(

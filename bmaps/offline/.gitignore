@@ -1,0 +1,16 @@
+# Environment
+.env
+venv/
+__pycache__/
+*.pyc
+
+# YOLOv8 model weights
+*.pt
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store

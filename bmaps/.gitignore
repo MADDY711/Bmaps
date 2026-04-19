@@ -52,10 +52,19 @@ desktop.ini
 # Project-specific
 project_summary (1).md
 WORK_DONE.md
+work_plan.md
 
 # Test outputs
 test/__pycache__/
 
 # Ignore generated folders
-vision-companion/**/build/
+vision-companion/
+android_dumps/
+.obsidian/
+backup/
 VISIONCompanion2/build/
+
+test/**/build/
+
+Screenshot (119).png
+yolov8n-seg.pt

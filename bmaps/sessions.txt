@@ -1,0 +1,12 @@
+gemini --resume 'd7ce7a15-3e8c-4198-88a0-935026118f58' -3/4/26
+gemini --resume '754fc065-0e8b-4337-b9f7-f6b6fdaabfff' -4/4/26
+-- decision making whether to make it deploy on cloud or android integration first
+   android integration first...let claude take it from here then make the context file for gemini for finishings.
+
+gemini --resume '2cf705c0-9fcb-4ce8-800b-028aa97f2758' -8/4/26
+-- local setup to amdroid done, but gemini live connection failed. will try again later.
+
+
+
+gemini --resume '99a7c199-fa34-43a7-8d38-48fa7d9464ce'  -13/4/26
+-- integration of offline models with llm

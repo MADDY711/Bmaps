@@ -1,0 +1,153 @@
+# map_server.py
+# Serves a live Leaflet map + Google Street View at http://localhost:8001
+# Auto-updates user position and street view every 2 seconds
+
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Shared state
+map_state = {
+    "lat": 51.5074,
+    "lng": -0.1278,
+    "places": [],
+    "status": "Waiting..."
+}
+
+GOOGLE_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
+
+@app.get("/state")
+async def get_state():
+    return JSONResponse(map_state)
+
+@app.get("/", response_class=HTMLResponse)
+async def map_page():
+    html_content = """
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Walking Assistant — Live View</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://maps.googleapis.com/maps/api/js?key={API_KEY}"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: sans-serif; background: #0f1117; color: #eee; height: 100vh; display: flex; flex-direction: column; }
+    #header { padding: 10px 16px; background: #1a1d27; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid #2a2d3a; z-index: 10; }
+    #header h1 { font-size: 15px; font-weight: 600; color: #fff; }
+    #status-pill { font-size: 11px; padding: 3px 10px; border-radius: 12px; background: #2a2d3a; color: #aaa; }
+    #status-pill.active { background: #1a3a2a; color: #4ade80; }
+    
+    #container { flex: 1; display: flex; overflow: hidden; }
+    #map { flex: 1; border-right: 2px solid #2a2d3a; }
+    #street-view { flex: 1; background: #000; }
+    
+    #places-panel {
+      position: absolute; bottom: 20px; left: 16px; z-index: 1000;
+      background: rgba(15, 17, 23, 0.9); border: 1px solid #2a2d3a;
+      border-radius: 10px; padding: 10px 14px; min-width: 220px; max-width: 300px;
+      backdrop-filter: blur(6px);
+    }
+    #places-panel h3 { font-size: 11px; color: #888; text-transform: uppercase; margin-bottom: 6px; }
+    #places-list { list-style: none; font-size: 13px; color: #ddd; }
+    #coords { font-size: 10px; color: #666; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <div id="header">
+    <h1>Walking Assistant — Live View</h1>
+    <span id="status-pill">Connecting...</span>
+  </div>
+  
+  <div id="container">
+    <div id="map"></div>
+    <div id="street-view"></div>
+  </div>
+
+  <div id="places-panel">
+    <h3>Nearby Places</h3>
+    <ul id="places-list"><li>Waiting for data...</li></ul>
+    <div id="coords">GPS: —</div>
+  </div>
+
+  <script>
+    // 1. Initialize 2D Map (Leaflet)
+    const map = L.map('map').setView([51.5074, -0.1278], 18);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+    
+    const userIcon = L.divIcon({
+      className: '',
+      html: '<div style="width:16px;height:16px;background:#3b82f6;border-radius:50%;border:3px solid #fff;box-shadow:0 0 8px rgba(0,0,0,0.5);"></div>',
+      iconSize: [16, 16], iconAnchor: [8, 8]
+    });
+    let userMarker = L.marker([51.5074, -0.1278], {icon: userIcon}).addTo(map);
+
+    // 2. Initialize Street View (Google)
+    let panorama;
+    function initStreetView() {
+      panorama = new google.maps.StreetViewPanorama(
+        document.getElementById("street-view"),
+        {
+          position: { lat: 51.5074, lng: -0.1278 },
+          pov: { heading: 0, pitch: 0 },
+          zoom: 1,
+          addressControl: false,
+          showRoadLabels: false
+        }
+      );
+    }
+
+    let lastPos = {lat: 0, lng: 0};
+
+    async function update() {
+      try {
+        const res = await fetch('/state');
+        const data = await res.json();
+        
+        const pos = {lat: data.lat, lng: data.lng};
+        
+        // Update 2D Map
+        userMarker.setLatLng([pos.lat, pos.lng]);
+        
+        // Update Street View only if moved significantly
+        if (Math.abs(pos.lat - lastPos.lat) > 0.00001 || Math.abs(pos.lng - lastPos.lng) > 0.00001) {
+          map.panTo([pos.lat, pos.lng]);
+          if (panorama) panorama.setPosition(pos);
+          lastPos = pos;
+        }
+
+        document.getElementById('coords').textContent = `GPS: ${pos.lat.toFixed(6)}, ${pos.lng.toFixed(6)}`;
+        document.getElementById('status-pill').textContent = data.status || 'Live';
+        document.getElementById('status-pill').className = 'active';
+
+        const list = document.getElementById('places-list');
+        if (data.places.length > 0) {
+          list.innerHTML = data.places.map(p => `<li>📍 ${p}</li>`).join('');
+        }
+      } catch(e) {}
+    }
+
+    // Start everything
+    if (typeof google !== 'undefined') initStreetView();
+    setInterval(update, 2000);
+    update();
+  </script>
+</body>
+</html>
+""".replace("{API_KEY}", GOOGLE_API_KEY)
+    return HTMLResponse(content=html_content)

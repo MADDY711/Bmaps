@@ -1,0 +1,29 @@
+# ============================================
+# AI-Based Blind Assistant - Dependencies
+# ============================================
+
+# Core computer vision
+opencv-python>=4.8.0
+numpy>=1.24.0
+
+# YOLOv8 object detection
+ultralytics>=8.0.0
+
+# Depth estimation (MiDaS)
+torch
+torchvision
+timm
+
+# Text-to-Speech
+pyttsx3>=2.90
+elevenlabs>=1.0.0
+
+# Voice recognition
+SpeechRecognition>=3.10.0
+PyAudio>=0.2.13
+
+# Optional: OpenAI smart assistant
+openai>=1.0.0
+
+# Utility
+python-dotenv>=1.0.0

@@ -92,7 +92,7 @@ interface VisionCompanionApi {
 object ApiClient {
 
     // ⚠️ PUT YOUR PC's IPv4 ADDRESS HERE
-    private const val BASE_URL = "http://192.168.1.100:8000/" //apna pc ka ip daalna hai ....phone cam ka nahi
+    private const val BASE_URL = "http://192.168.1.3:8000/" //apna pc ka ip daalna hai ....phone cam ka nahi
 
     private val client = OkHttpClient.Builder()
         .addInterceptor(

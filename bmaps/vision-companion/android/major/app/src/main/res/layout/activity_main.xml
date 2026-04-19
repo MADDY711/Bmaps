@@ -40,19 +40,20 @@
         <Button
             android:id="@+id/analyzeButton"
             android:layout_width="match_parent"
-            android:layout_height="80dp"
-            android:text="ANALYZE SCENE"
-            android:textSize="20sp"
-            android:backgroundTint="#4CAF50"
-            android:layout_marginBottom="12dp" />
+            android:layout_height="120dp"
+            android:text="START LIVE ASSISTANT"
+            android:textSize="24sp"
+            android:textStyle="bold"
+            android:backgroundTint="#FF5722"
+            android:layout_marginBottom="16dp" />
 
         <Button
             android:id="@+id/chatButton"
             android:layout_width="match_parent"
-            android:layout_height="80dp"
-            android:text="TEST CHAT"
-            android:textSize="20sp"
-            android:backgroundTint="#2196F3" />
+            android:layout_height="60dp"
+            android:text="TEST CONNECTION"
+            android:textSize="14sp"
+            android:backgroundTint="#424242" />
 
     </LinearLayout>
 

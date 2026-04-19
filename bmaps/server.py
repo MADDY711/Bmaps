@@ -1,21 +1,40 @@
 # server.py
+import sys
+import os
+import asyncio
+import base64
+import json
+import cv2
+import numpy as np
+import time
+from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, WebSocket
 from google import genai
 from google.genai import types
-import asyncio, base64, json, os
 from dotenv import load_dotenv
 
+# Add offline modules to path
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "offline"))
+
+from offline.modules.detector import ObjectDetector
+from offline.modules.obstacle import ObstacleDetector
+from offline.modules.depth_estimator import DepthEstimator
+from offline.modules.navigator import Navigator
+from offline.config import (
+    YOLO_MODEL, YOLO_CONFIDENCE, MDE_MODEL,
+    OBSTACLE_CLASSES, CLOSE_THRESHOLD, MEDIUM_THRESHOLD,
+    SAFETY_STOP_THRESHOLD, SPEECH_COOLDOWN,
+    FRAME_WIDTH, FRAME_HEIGHT
+)
+
 from maps import handle_maps_call
+from map_server import app, map_state
+from context import SYSTEM_PROMPT
 
 load_dotenv()
-app = FastAPI()
-client = genai.Client(api_key=os.getenv("GOOGLE_AI_API_KEY"))
 
-SYSTEM_PROMPT = """You are a real-time navigation assistant for a visually impaired user.
-Describe what you see concisely. Warn about obstacles, curbs, traffic lights, and people.
-When asked about nearby places, use your get_nearby_landmarks tool.
-Keep responses short and spoken — no lists, no markdown.
-IMPORTANT: Always respond with spoken audio only. Never respond with text only."""
+# ---- Gemini Config ----
+client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 maps_tool = types.Tool(function_declarations=[
     types.FunctionDeclaration(
@@ -34,10 +53,56 @@ maps_tool = types.Tool(function_declarations=[
     )
 ])
 
+# ---- Offline Model Initialization ----
+print("[Init] Loading Reflex Models...")
+detector = ObjectDetector(YOLO_MODEL, YOLO_CONFIDENCE)
+depth_estimator = DepthEstimator(MDE_MODEL)
+obstacle_detector = ObstacleDetector(
+    obstacle_classes=OBSTACLE_CLASSES,
+    frame_width=FRAME_WIDTH,
+    frame_height=FRAME_HEIGHT,
+    close_threshold=CLOSE_THRESHOLD,
+    medium_threshold=MEDIUM_THRESHOLD,
+    safety_stop_threshold=SAFETY_STOP_THRESHOLD
+)
+navigator = Navigator(cooldown=SPEECH_COOLDOWN)
+executor = ThreadPoolExecutor(max_workers=2)
+
+def process_reflexes(frame_bytes):
+    """Blocking CV/ML logic run in thread pool."""
+    nparr = np.frombuffer(frame_bytes, np.uint8)
+    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    if frame is None:
+        return None, None
+
+    detections = detector.detect(frame)
+    obstacles = obstacle_detector.process(detections)
+    depth_map = depth_estimator.estimate(frame)
+    hazards = depth_estimator.detect_hazards(depth_map)
+    
+    instruction = None
+    if hazards:
+        for h in hazards:
+            if h["danger_level"] == "HIGH":
+                instruction = {"type": "STOP", "message": f"Stop! {h['label']} detected {h['region'].lower()}."}
+                break
+    
+    if not instruction:
+        instruction = navigator.decide(obstacles)
+
+    report = {
+        "obstacles": [o["label"] for o in obstacles],
+        "hazards": [{"type": h["label"], "region": h["region"]} for h in hazards],
+        "instruction": instruction["type"] if instruction else "NONE"
+    }
+    
+    return report, instruction
+
 @app.websocket("/ws/stream")
 async def stream_endpoint(websocket: WebSocket):
     await websocket.accept()
     print("✅ WebSocket accepted")
+    map_state["status"] = "Connected"
 
     try:
         async with client.aio.live.connect(
@@ -46,7 +111,6 @@ async def stream_endpoint(websocket: WebSocket):
                 system_instruction=SYSTEM_PROMPT,
                 tools=[maps_tool],
                 response_modalities=["AUDIO"],
-                # ✅ VAD disabled — we control turn-taking manually via ActivityStart/ActivityEnd
                 realtime_input_config=types.RealtimeInputConfig(
                     automatic_activity_detection=types.AutomaticActivityDetection(disabled=True)
                 ),
@@ -58,55 +122,86 @@ async def stream_endpoint(websocket: WebSocket):
             )
         ) as session:
             print("✅ Gemini Live session opened")
+            map_state["status"] = "Ready"
 
+            # Initial Greeting
             await session.send_client_content(
-                turns=[
-                    types.Content(
-                        parts=[types.Part(text="Greet the user warmly. Say: Hi! I am your walking assistant. I can see through your camera and help you navigate. Just speak naturally.")],
-                        role="user"
-                    )
-                ],
+                turns=[types.Content(parts=[types.Part(text="Greet the user warmly. Say you are ready to help them walk safely.")], role="user")],
                 turn_complete=True
             )
 
             async def send_loop():
                 audio_sent_this_turn = False
+                last_report_time = 0
+                last_proactive_time = time.time()
+                last_instruction_type = "NONE"
+                
                 while True:
                     try:
                         data = json.loads(await websocket.receive_text())
 
-                        # ✅ FIX: send ActivityStart when user begins speaking
-                        if data.get("speech_start"):
-                            print("🎙️ ActivityStart → Gemini")
-                            await session.send_realtime_input(
-                                activity_start=types.ActivityStart()
+                        if "lat" in data and "lng" in data:
+                            map_state["lat"], map_state["lng"] = data["lat"], data["lng"]
+                            map_state["status"] = "Walking..."
+
+                        if "frame" in data:
+                            frame_bytes = base64.b64decode(data["frame"])
+                            
+                            report, instruction = await asyncio.get_event_loop().run_in_executor(
+                                executor, process_reflexes, frame_bytes
                             )
 
-                        if "audio" in data:
-                            print(f"📤 Sending audio chunk to Gemini")
+                            if report:
+                                if instruction and instruction["type"] == "STOP":
+                                    print(f"🚨 REFLEX ALERT: {instruction['message']}")
+                                    map_state["status"] = f"HAZARD: {instruction['type']}"
+                                    await websocket.send_text(json.dumps({
+                                        "transcript": f"REFLEX: {instruction['message']}"
+                                    }))
+
+                                now = time.time()
+                                current_inst = report.get("instruction", "NONE")
+                                
+                                # Proactive trigger if:
+                                # 1. Safety state changed (e.g. STOP -> CLEAR)
+                                # 2. Cooldown of 15s passed
+                                significant_change = (current_inst != last_instruction_type)
+                                time_for_update = (now - last_proactive_time > 15.0)
+
+                                if now - last_report_time > 2.0:
+                                    should_trigger = significant_change or time_for_update
+                                    
+                                    await session.send_client_content(
+                                        turns=[types.Content(
+                                            parts=[types.Part(text=f"SITUATION_REPORT: {json.dumps(report)}")],
+                                            role="user"
+                                        )],
+                                        turn_complete=should_trigger
+                                    )
+                                    
+                                    last_report_time = now
+                                    if should_trigger:
+                                        last_proactive_time = now
+                                        last_instruction_type = current_inst
+                                        print(f"🧠 Proactive Trigger: change={significant_change}, time={time_for_update}")
+
                             await session.send_realtime_input(
-                                audio=types.Blob(
-                                    data=base64.b64decode(data["audio"]),
-                                    mime_type="audio/pcm;rate=16000"
-                                )
+                                video=types.Blob(data=frame_bytes, mime_type="image/jpeg")
+                            )
+
+                        if data.get("speech_start"):
+                            print("🎙️ ActivityStart")
+                            await session.send_realtime_input(activity_start=types.ActivityStart())
+
+                        if "audio" in data:
+                            await session.send_realtime_input(
+                                audio=types.Blob(data=base64.b64decode(data["audio"]), mime_type="audio/pcm;rate=16000")
                             )
                             audio_sent_this_turn = True
 
-                        if "frame" in data:
-                            await session.send_realtime_input(
-                                video=types.Blob(
-                                    data=base64.b64decode(data["frame"]),
-                                    mime_type="image/jpeg"
-                                )
-                            )
-
-                        # ✅ FIX: send ActivityEnd on speech_end (VAD) or turn_complete (PTT)
-                        # This tells Gemini the user has finished speaking — triggers response generation
                         if (data.get("speech_end") or data.get("turn_complete")) and audio_sent_this_turn:
-                            print("🔚 ActivityEnd → Gemini")
-                            await session.send_realtime_input(
-                                activity_end=types.ActivityEnd()
-                            )
+                            print("🔚 ActivityEnd")
+                            await session.send_realtime_input(activity_end=types.ActivityEnd())
                             audio_sent_this_turn = False
 
                     except Exception as e:
@@ -117,49 +212,29 @@ async def stream_endpoint(websocket: WebSocket):
                 while True:
                     try:
                         async for response in session.receive():
-
-                            has_data = response.data is not None
-                            has_text = False
-                            text_content = ""
-
                             if response.server_content and response.server_content.model_turn:
                                 for part in response.server_content.model_turn.parts:
                                     if hasattr(part, 'text') and part.text:
-                                        has_text = True
-                                        text_content += part.text
-
-                            print(f"📩 Gemini — audio:{has_data} text:{has_text} turn_complete:{response.server_content.turn_complete if response.server_content else False}")
-
-                            if has_text:
-                                print(f"💬 Gemini text: {text_content[:100]}")
-                                await websocket.send_text(json.dumps({
-                                    "transcript": text_content
-                                }))
+                                        print(f"💬 Gemini: {part.text}")
+                                        await websocket.send_text(json.dumps({"transcript": part.text}))
 
                             if response.tool_call:
                                 for fc in response.tool_call.function_calls:
-                                    print(f"🗺️  Maps call: {fc.name}")
+                                    print(f"🗺️ Maps Tool: {fc.name}")
+                                    map_state["status"] = "Fetching places..."
                                     result = await handle_maps_call(fc)
+                                    map_state["places"] = result.get("places", [])
+                                    map_state["status"] = f"Found {len(map_state['places'])} places"
                                     await session.send_tool_response(
-                                        function_responses=[
-                                            types.FunctionResponse(
-                                                name=fc.name,
-                                                id=fc.id,
-                                                response=result
-                                            )
-                                        ]
+                                        function_responses=[types.FunctionResponse(name=fc.name, id=fc.id, response=result)]
                                     )
 
                             if response.data:
-                                await websocket.send_text(json.dumps({
-                                    "audio": base64.b64encode(response.data).decode()
-                                }))
+                                await websocket.send_text(json.dumps({"audio": base64.b64encode(response.data).decode()}))
 
                             if response.server_content and response.server_content.turn_complete:
-                                print("✅ Gemini finished turn")
-                                await websocket.send_text(json.dumps({
-                                    "turn_complete": True
-                                }))
+                                print("✅ Turn complete")
+                                await websocket.send_text(json.dumps({"turn_complete": True}))
 
                     except Exception as e:
                         print(f"❌ Receive error: {e}")
@@ -168,5 +243,6 @@ async def stream_endpoint(websocket: WebSocket):
             await asyncio.gather(send_loop(), receive_loop())
 
     except Exception as e:
-        print(f"❌ Failed to open Gemini session: {e}")
+        print(f"❌ Gemini session error: {e}")
+        map_state["status"] = "Error"
         await websocket.close()

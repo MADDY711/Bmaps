@@ -7,7 +7,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -64,11 +63,11 @@ fun MainScreen() {
                 modifier = Modifier
                     .padding(16.dp)
                     .fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly,
+                horizontalArrangement = Arrangement.Center, // center since only 1 button
                 verticalAlignment = Alignment.CenterVertically
             ) {
 
-                // Mic Button
+                // Mic Button ONLY
                 IconButton(
                     onClick = {
                         // Start voice input
@@ -77,19 +76,6 @@ fun MainScreen() {
                     Icon(
                         imageVector = Icons.Default.Mic,
                         contentDescription = "Mic",
-                        modifier = Modifier.size(32.dp)
-                    )
-                }
-
-                // Camera Button
-                IconButton(
-                    onClick = {
-                        // Capture photo
-                    }
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.CameraAlt,
-                        contentDescription = "Camera",
                         modifier = Modifier.size(32.dp)
                     )
                 }
