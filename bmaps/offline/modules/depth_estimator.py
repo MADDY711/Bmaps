@@ -19,28 +19,46 @@ class DepthEstimator:
 
     def __init__(self, model_id="depth-anything/Depth-Anything-V2-Small-hf"):
         """
-        Load the Depth-Anything-V2-Small model via Transformers.
+        Load the Depth-Anything-V2-Small model. Prioritizes local cache.
         """
-        print(f"[Depth] Loading Depth-Anything-V2 from Hugging Face: {model_id}")
-        
-        # Load from official Hugging Face repo
-        # This will download ~95MB of weights on first run
-        self.device = torch.device("cpu")
         import os
+        self.device = torch.device("cpu")
         hf_token = os.getenv("HF_TOKEN")
         
+        # Dedicated cache folder in the project directory
+        cache_dir = os.path.join(os.path.dirname(__file__), "..", "..", "models", "depth_anything")
+        os.makedirs(cache_dir, exist_ok=True)
+
         try:
-            # If the model is already downloaded, it will load from cache
-            self.processor = AutoImageProcessor.from_pretrained(model_id, token=hf_token)
-            self.model = AutoModelForDepthEstimation.from_pretrained(model_id, token=hf_token)
+            # 1. Try loading from local cache ONLY (Instant, no internet)
+            print(f"[Depth] Attempting to load from local cache: {cache_dir}")
+            self.processor = AutoImageProcessor.from_pretrained(
+                model_id, cache_dir=cache_dir, local_files_only=True
+            )
+            self.model = AutoModelForDepthEstimation.from_pretrained(
+                model_id, cache_dir=cache_dir, local_files_only=True
+            )
+            print("[Depth] Success: Model loaded from local disk.")
+        except Exception:
+            # 2. Fallback: Download from HF (Only happens if local files missing)
+            print(f"[Depth] Local files not found. Downloading from Hugging Face: {model_id}")
+            try:
+                self.processor = AutoImageProcessor.from_pretrained(
+                    model_id, token=hf_token, cache_dir=cache_dir, local_files_only=False
+                )
+                self.model = AutoModelForDepthEstimation.from_pretrained(
+                    model_id, token=hf_token, cache_dir=cache_dir, local_files_only=False
+                )
+                print("[Depth] Success: Model downloaded and cached locally.")
+            except Exception as e:
+                print(f"[Depth] CRITICAL ERROR: Could not download model: {e}")
+                self.model = None
+                return
+
+        if self.model:
             self.model.to(self.device)
             self.model.eval()
-            print("[Depth] Depth-Anything-V2 loaded successfully!")
-        except Exception as e:
-            print(f"[Depth] ERROR loading V2: {e}")
-            print("[Depth] CRITICAL: Ensure you have internet for the first run.")
-            # Last-resort fallback to a basic depth logic if everything fails
-            self.model = None
+            print("[Depth] Depth-Anything-V2 ready!")
 
     def estimate(self, frame):
         """

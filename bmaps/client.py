@@ -5,6 +5,7 @@ import threading
 import queue
 import pyttsx3
 import os
+import time
 from dotenv import load_dotenv
 from datetime import datetime
 
@@ -23,6 +24,55 @@ FRAME_INTERVAL = 2.0  # 1 FPS
 
 # ✅ Toggle this to switch between Push-to-Talk and VAD
 USE_PUSH_TO_TALK = False
+
+# --- High-Speed Threaded Camera Reader (v3: Robust MJPEG) ---
+class CameraStream:
+    def __init__(self, source):
+        self.source = source
+        self.lock = threading.Lock()
+        self.running = True
+        self.frame = None
+        self.status = False
+        
+        # Open initial connection
+        self.cap = cv2.VideoCapture(self.source)
+        
+        self.thread = threading.Thread(target=self._update, daemon=True)
+        self.thread.start()
+        print(f"[Camera] Stream thread started for {self.source}")
+
+    def _update(self):
+        while self.running:
+            if not self.cap.isOpened():
+                time.sleep(1)
+                self.cap.open(self.source)
+                continue
+
+            # Standard read — the thread handles the blocking
+            ret, frame = self.cap.read()
+            
+            if ret:
+                with self.lock:
+                    self.frame = frame
+                    self.status = True
+            else:
+                # If read fails, wait a bit and try to reopen
+                print("[Camera] Read failed, reconnecting...")
+                self.cap.release()
+                time.sleep(1)
+                self.cap.open(self.source)
+
+            # Control thread speed to match roughly 30fps and not choke CPU
+            time.sleep(0.01)
+
+    def get_frame(self):
+        with self.lock:
+            return self.frame
+
+    def stop(self):
+        self.running = False
+        if self.cap:
+            self.cap.release()
 
 def is_speech(audio_chunk: bytes, threshold=60) -> bool:
     audio_array = np.frombuffer(audio_chunk, dtype=np.int16)
@@ -49,8 +99,12 @@ class WalkingAssistantClient:
         self.tts = pyttsx3.init()
         self.tts.setProperty('rate', 190)
 
-        self.lat = 51.5074
-        self.lng = -0.1278
+        self.lat = 0.0
+        self.lng = 0.0
+
+        # Initialize Threaded Camera
+        print(f"📷 Opening Camera Stream: {CAMERA_SOURCE}")
+        self.cam = CameraStream(CAMERA_INDEX)
 
         self.audio_queue = queue.Queue()
         self.playback_thread = threading.Thread(target=self._playback_worker, daemon=True)
@@ -60,8 +114,6 @@ class WalkingAssistantClient:
         self.conversation = []
         self.status = "Initializing..."
         self.is_speaking = False
-        self.latest_frame = None
-        self.frame_lock = threading.Lock()
         self.running = True
 
         self.ptt_active = False
@@ -84,13 +136,11 @@ class WalkingAssistantClient:
         return self.stream.read(1024, exception_on_overflow=False)
 
     def ui_thread(self):
-        cap = cv2.VideoCapture(CAMERA_INDEX)
         while self.running:
-            ret, frame = cap.read()
-            if ret:
-                with self.frame_lock: self.latest_frame = frame.copy()
+            # Grab the LATEST frame from the background thread
+            frame = self.cam.get_frame()
+            self._draw_ui(frame)
 
-            self._draw_ui()
             key = cv2.waitKey(30) & 0xFF
             if key == ord('q'): self.running = False; break
             if key == ord('w'): self.lat += 0.0001
@@ -103,16 +153,16 @@ class WalkingAssistantClient:
                 else:
                     if self.ptt_active: self.ptt_active = False; self.ptt_just_released = True
 
-        cap.release(); cv2.destroyAllWindows(); self.audio_queue.put(None)
+        self.cam.stop()
+        cv2.destroyAllWindows()
+        self.audio_queue.put(None)
 
-    def _draw_ui(self):
+    def _draw_ui(self, frame):
         canvas = np.zeros((600, 1100, 3), dtype=np.uint8)
-        with self.frame_lock:
-            frame = self.latest_frame.copy() if self.latest_frame is not None else None
         if frame is not None:
             canvas[60:540, 20:660] = cv2.resize(frame, (640, 480))
 
-        cv2.putText(canvas, "AI WALKING ASSISTANT (VAD Tuned)", (20, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2)
+        cv2.putText(canvas, "AI WALKING ASSISTANT (Lag-Free Mode)", (20, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2)
 
         # Draw status
         status_color = (0, 0, 255) if self.ptt_active else (0, 255, 0) if self.is_speaking else (100, 100, 255)
@@ -182,7 +232,8 @@ class WalkingAssistantClient:
                                     self.status = "Processing"
 
                         if now - last_frame_time >= FRAME_INTERVAL:
-                            with self.frame_lock: frame = self.latest_frame.copy() if self.latest_frame is not None else None
+                            # Use the latest frame from the background thread
+                            frame = self.cam.get_frame()
                             if frame is not None:
                                 _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
                                 payload["frame"] = base64.b64encode(buffer).decode('utf-8')
